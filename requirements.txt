@@ -1,0 +1,6 @@
+streamlit
+finance-datareader
+yfinance
+OpenDartReader
+plotly
+pandas
