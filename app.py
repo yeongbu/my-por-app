@@ -1,5 +1,3 @@
-​<details>
-<summary>
 import streamlit as st
 import FinanceDataReader as fdr
 import OpenDartReader
@@ -9,9 +7,10 @@ import plotly.graph_objects as go
 from datetime import datetime
 import os
 
+# 페이지 설정
 st.set_page_config(page_title="POR Master", page_icon="📈", layout="wide")
 
-# API 키 설정 (Streamlit Secrets용)
+# API 키 설정 (Streamlit Secrets에서 가져오기)
 DART_KEY = os.environ.get('DART_API_KEY')
 
 st.sidebar.header("⚙️ 분석 설정")
@@ -61,7 +60,6 @@ if st.sidebar.button("분석 실행"):
                 
                 stock = yf.Ticker(yf_ticker)
                 hist = stock.history(period="10y").reset_index()
-                # 날짜 단위 통일 (에러 방지)
                 hist['Date'] = pd.to_datetime(hist['Date']).dt.tz_localize(None).astype('datetime64[ns]')
                 curr_price = hist['Close'].iloc[-1]
                 shares = row['Stocks']
@@ -69,13 +67,22 @@ if st.sidebar.button("분석 실행"):
 
                 dart = OpenDartReader(DART_KEY)
                 df_fs = fetch_dart_data(dart, s_code)
-                df_fs['Date'] = pd.to_datetime(df_fs['Date']).astype('datetime64[ns]')
                 
                 if df_fs.empty:
                     st.warning("재무 데이터를 불러오지 못했습니다.")
                 else:
-                    st.title(f"🏢 {s_name} ({s_code}) 분석 결과")
+                    df_fs['Date'] = pd.to_datetime(df_fs['Date']).astype('datetime64[ns]')
+                    st.title(f"🏢 {s_name} ({s_code}) 분석 리포트")
+                    
+                    latest_ni = df_fs.iloc[-1]['당기순이익_억원']
+                    curr_per = mcap_billion / latest_ni if latest_ni > 0 else 0
                     now_por = (curr_price * shares) / (exp_profit * 100000000)
+                    
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("현재가", f"{curr_price:,.0f}원")
+                    c2.metric("시가총액", f"{mcap_billion:,.0f}억")
+                    c3.metric("현재 PER", f"{curr_per:.2f}배")
+                    
                     st.info(f"🔥 현재가 기준 POR: **{now_por:.2f}배**")
 
                     hist['MarketCap'] = hist['Close'] * shares
@@ -88,4 +95,5 @@ if st.sidebar.button("분석 실행"):
                     fig.add_hline(y=avg_p, line_dash="dot", annotation_text="Average")
                     fig.add_hline(y=now_por, line_color="red", line_width=3, annotation_text="Current")
                     st.plotly_chart(fig, use_container_width=True)
- </summary></details>
+                    
+                    st.table(df_fs.tail(5).set_index('Date').T)
