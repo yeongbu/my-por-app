@@ -26,21 +26,17 @@ def get_krx_list():
     return fdr.StockListing('KRX')
 
 @st.cache_data(ttl=3600)
-def fetch_dart_data(_dart_client, s_code):
-    fs_list = []
-    current_year = datetime.now().year
-    for year in range(current_year - 10, current_year):
-        try:
-            fs = _dart_client.finstate(s_code, year, reprt_code='11011')
-            if fs is not None and not fs.empty:
-                op = fs.loc[(fs['account_nm'].str.contains('영업이익')) & (fs['fs_div'].isin(['CFS', 'OFS']))]
-                ni = fs.loc[(fs['account_nm'].str.contains('당기순이익')) & (fs['fs_div'].isin(['CFS', 'OFS']))]
-                op_v = int(float(str(op.iloc[0]['thstrm_amount']).replace(',', ''))/100000000) if not op.empty else 0
-                ni_v = int(float(str(ni.iloc[0]['thstrm_amount']).replace(',', ''))/100000000) if not ni.empty else 0
-                if op_v != 0:
-                    fs_list.append({'Date': f"{year}-12-31", '영업이익_억원': op_v, '당기순이익_억원': ni_v})
-        except: continue
-    return pd.DataFrame(fs_list)
+def get_krx_list():
+    try:
+        # KRX 전체 대신 코스피, 코스닥을 각각 가져와서 합칩니다.
+        df_kospi = fdr.StockListing('KOSPI')
+        df_kosdaq = fdr.StockListing('KOSDAQ')
+        return pd.concat([df_kospi, df_kosdaq])
+    except Exception as e:
+        # 위 방법도 실패할 경우를 대비해 빈 데이터프레임 대신 에러 메시지를 띄웁니다.
+        st.error(f"종목 리스트를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요. ({e})")
+        return pd.DataFrame()
+
 
 if st.sidebar.button("분석 실행"):
     if not DART_KEY or not company_name or exp_profit <= 0:
