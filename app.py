@@ -20,9 +20,12 @@ if not DART_KEY:
     DART_KEY = st.sidebar.text_input("DART API KEY", type="password")
 
 company_name = st.sidebar.text_input("회사 이름", placeholder="예: 씨에스윈드")
-manual_code = st.sidebar.text_input("종목코드 직접입력 (선택)", placeholder="예: 112610")
-exp_profit = st.sidebar.number_input("올해 예상 영업이익 (억원)", value=0)
-target_price = st.sidebar.number_input("목표 주가 (원)", value=0)
+# 종목코드는 선택 사항임을 명시
+manual_code = st.sidebar.text_input("종목코드 직접입력 (선택)", placeholder="이름으로 안 찾아질 때만 입력")
+
+# [수정] value=None으로 설정하여 초기값이 0으로 뜨지 않게 변경 (더 깔끔해졌습니다!)
+exp_profit = st.sidebar.number_input("올해 예상 영업이익 (억원)", value=None, placeholder="예상 이익을 입력하세요")
+target_price = st.sidebar.number_input("목표 주가 (원)", value=None, placeholder="목표가를 입력하세요")
 
 # 4. 기능 함수 정의 (캐싱 및 에러 방지)
 
@@ -43,7 +46,7 @@ def get_dart_client(key):
             return OpenDartReader(key)
         except Exception:
             if i < 2:
-                time.sleep(3) # 3초 쉬고 다시 시도
+                time.sleep(3) 
                 continue
     return None
 
@@ -67,26 +70,30 @@ def fetch_dart_data(_dart_client, s_code):
 
 # 5. 분석 실행 메인 로직
 if st.sidebar.button("분석 실행"):
+    # 입력 검증
     if not DART_KEY:
         st.error("API 키를 입력해주세요.")
     elif not company_name and not manual_code:
-        st.error("회사 이름 또는 종목코드를 입력해주세요.")
+        st.error("회사 이름을 입력해주세요.")
+    elif exp_profit is None or exp_profit <= 0:
+        st.error("올해 예상 영업이익을 입력해주세요.")
     else:
         with st.spinner('데이터를 불러오고 있습니다...'):
-            # (1) 종목코드 결정
             s_code = manual_code if manual_code else None
             s_name = company_name
             
+            # (1) 종목코드 찾기 로직 강화
             if not s_code:
                 df_krx = get_krx_list()
                 if not df_krx.empty:
                     s_term = company_name.replace(" ", "").upper()
+                    # 이름에 포함되는 것 중 가장 정확한 것 찾기
                     target = df_krx[df_krx['Name'].str.replace(" ", "").str.upper().str.contains(s_term)]
                     if not target.empty:
                         s_name, s_code = target.iloc[0]['Name'], target.iloc[0]['Code']
 
             if not s_code:
-                st.error("종목을 찾을 수 없습니다. 종목코드를 직접 입력해 보세요.")
+                st.error(f"'{company_name}' 종목을 찾을 수 없습니다. 종목코드를 직접 입력해 보세요.")
                 st.stop()
 
             # (2) 주가 데이터 (yfinance)
@@ -97,7 +104,7 @@ if st.sidebar.button("분석 실행"):
                 hist = stock.history(period="10y")
 
             if hist.empty:
-                st.error("주가 데이터를 가져오지 못했습니다.")
+                st.error("주가 데이터를 가져오지 못했습니다. 코드가 정확한지 확인해 주세요.")
                 st.stop()
 
             hist = hist.reset_index()
@@ -113,7 +120,7 @@ if st.sidebar.button("분석 실행"):
             df_fs = fetch_dart_data(dart, s_code)
             
             if df_fs.empty:
-                st.warning("재무 데이터를 불러오지 못했습니다.")
+                st.warning("과거 재무 데이터를 불러오지 못했습니다. (DART 서버 응답 확인 필요)")
             else:
                 df_fs['Date'] = pd.to_datetime(df_fs['Date']).astype('datetime64[ns]')
                 st.title(f"🏢 {s_name} ({s_code}) 분석 결과")
@@ -125,7 +132,7 @@ if st.sidebar.button("분석 실행"):
                 except: pass
 
                 mcap_billion = int((curr_price * shares) / 100000000)
-                now_por = (curr_price * shares) / (exp_profit * 100000000) if exp_profit > 0 else 0
+                now_por = (curr_price * shares) / (exp_profit * 100000000)
                 
                 # 지표 요약
                 c1, c2, c3 = st.columns(3)
@@ -144,11 +151,11 @@ if st.sidebar.button("분석 실행"):
                 fig.add_hline(y=avg_por, line_dash="dot", annotation_text=f"평균: {avg_por:.2f}")
                 fig.add_hline(y=now_por, line_color="red", line_width=2, annotation_text=f"현재: {now_por:.2f}")
                 
-                if target_price > 0:
+                if target_price and target_price > 0:
                     t_por = (target_price * shares) / (exp_profit * 100000000)
-                    fig.add_hline(y=t_por, line_color="blue", line_dash="dash", annotation_text="목표 POR")
+                    fig.add_hline(y=t_por, line_color="blue", line_dash="dash", annotation_text=f"목표가 POR: {t_por:.2f}")
 
-                fig.update_layout(title="📈 10년 POR 히스토리 밴드", template="plotly_white")
+                fig.update_layout(title=f"📈 {s_name} 10년 POR 히스토리 밴드", template="plotly_white")
                 st.plotly_chart(fig, use_container_width=True)
 
                 st.subheader("📋 최근 10년 실적 (억원)")
