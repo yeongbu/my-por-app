@@ -8,151 +8,135 @@ from datetime import datetime
 import os
 import time
 
-# 1. 페이지 설정 및 제목
-st.set_page_config(page_title="POR Master", page_icon="📈", layout="wide")
+# 1. 페이지 기본 설정
+st.set_page_config(page_title="10Y POR Analyzer", page_icon="📈", layout="wide")
 
-# 2. 보안 비밀(Secrets) 설정
+# 2. 보안 비밀 설정 (DART 키)
 DART_KEY = os.environ.get('DART_API_KEY')
 
-# 3. 사이드바 메뉴
+# 3. 사이드바 구성
 st.sidebar.header("⚙️ 분석 설정")
 if not DART_KEY:
     DART_KEY = st.sidebar.text_input("DART API KEY", type="password")
 
-company_name = st.sidebar.text_input("회사 이름", placeholder="예: 씨에스윈드")
-manual_code = st.sidebar.text_input("종목코드 직접입력 (선택)", placeholder="이름으로 안 찾아질 때만 입력")
-
-# 초기값 None 설정 (0 안 뜨게 수정)
-exp_profit = st.sidebar.number_input("올해 예상 영업이익 (억원)", value=None, placeholder="예상 이익 입력")
+company_name = st.sidebar.text_input("회사 이름", placeholder="예: 삼성전자")
+manual_code = st.sidebar.text_input("종목코드 직접입력 (선택)", placeholder="예: 005930")
+exp_profit = st.sidebar.number_input("올해 예상 영업이익 (억원)", value=None, placeholder="예상익 입력")
 target_price = st.sidebar.number_input("목표 주가 (원)", value=None, placeholder="목표가 입력")
 
-# 4. 기능 함수 정의 (캐싱 및 에러 방지 강화)
-
+# 4. 고속화를 위한 캐시 함수들
 @st.cache_data(ttl=3600)
-def get_krx_list():
-    """한국거래소 종목 리스트 로드"""
+def get_stock_list():
     try:
-        # 가장 안정적인 코스피/코스닥 개별 호출 후 병합 방식
-        df1 = fdr.StockListing('KOSPI')
-        df2 = fdr.StockListing('KOSDAQ')
-        df = pd.concat([df1, df2])
-        return df if not df.empty else pd.DataFrame()
+        return fdr.StockListing('KRX')
     except:
         return pd.DataFrame()
 
 @st.cache_resource
-def get_dart_client(key):
-    """DART 클라이언트 연결 (재시도 횟수 및 대기시간 대폭 강화)"""
-    for i in range(5):  # 5번까지 재시도
-        try:
-            # OpenDartReader 초기화 시 타임아웃 문제를 피하기 위해 시도
-            return OpenDartReader(key)
-        except Exception:
-            if i < 4:
-                time.sleep(5) # 5초씩 대기하며 재시도
-                continue
-    return None
+def get_dart(key):
+    try: return OpenDartReader(key)
+    except: return None
 
-@st.cache_data(ttl=3600)
-def fetch_dart_data(_dart_client, s_code):
-    """10년치 재무 데이터 추출"""
+@st.cache_data(ttl=86400) # 재무 데이터는 하루 동안 저장
+def fetch_10y_data(_dart, s_code):
     fs_list = []
-    current_year = datetime.now().year
-    for year in range(current_year - 10, current_year):
+    curr_year = datetime.now().year
+    
+    # 진행 상황을 사용자에게 보여줍니다 (지루함 방지)
+    progress_text = st.empty()
+    bar = st.progress(0)
+    
+    for i, year in enumerate(range(curr_year - 10, curr_year)):
+        progress_text.text(f"🔍 {year}년 재무제표 읽는 중... ({i+1}/10)")
+        bar.progress((i + 1) / 10)
         try:
-            fs = _dart_client.finstate(s_code, year, reprt_code='11011')
+            # DART 서버에 부담을 주지 않기 위한 아주 짧은 휴식
+            time.sleep(0.1)
+            fs = _dart.finstate(s_code, year, reprt_code='11011')
             if fs is not None and not fs.empty:
-                op = fs.loc[(fs['account_nm'].str.contains('영업이익')) & (fs['fs_div'].isin(['CFS', 'OFS']))]
-                op_v = int(float(str(op.iloc[0]['thstrm_amount']).replace(',', ''))/100000000) if not op.empty else 0
-                if op_v != 0:
-                    fs_list.append({'Date': f"{year}-12-31", '영업이익_억원': op_v})
+                op = fs.loc[fs['account_nm'].str.contains('영업이익')].iloc[0]
+                val = int(float(str(op['thstrm_amount']).replace(',',''))/100000000)
+                if val != 0:
+                    fs_list.append({'Date': pd.to_datetime(f"{year}-12-31"), 'OP': val})
         except: continue
+        
+    progress_text.empty()
+    bar.empty()
     return pd.DataFrame(fs_list)
 
-# 5. 분석 실행 메인 로직
-if st.sidebar.button("분석 실행"):
-    if not DART_KEY:
-        st.error("API 키를 입력해주세요.")
-    elif not company_name and not manual_code:
-        st.error("회사 이름을 입력해주세요.")
-    elif exp_profit is None or exp_profit <= 0:
-        st.error("올해 예상 영업이익을 입력해주세요.")
-    else:
-        with st.spinner('DART 서버에 연결하여 데이터를 가져오는 중입니다... (최대 30초 소요)'):
-            s_code = manual_code if manual_code else None
-            s_name = company_name
+# 5. 실행 로직
+if st.sidebar.button("10년 데이터 분석 시작"):
+    if not DART_KEY or (not company_name and not manual_code) or exp_profit is None:
+        st.error("설정창에 내용을 모두 입력해주세요!")
+        st.stop()
+
+    with st.spinner('🎯 10년 치 데이터를 수집하고 있습니다. 잠시만 기다려주세요...'):
+        # (1) 종목 찾기
+        s_code = manual_code
+        display_name = company_name
+        if not s_code:
+            df_krx = get_stock_list()
+            if not df_krx.empty:
+                target = df_krx[df_krx['Name'].str.contains(company_name.replace(" ",""))]
+                if not target.empty:
+                    s_code = target.iloc[0]['Code']
+                    display_name = target.iloc[0]['Name']
+        
+        if not s_code:
+            st.error("종목을 찾을 수 없습니다. 종목코드를 직접 입력해 보세요.")
+            st.stop()
+
+        # (2) 주가 데이터 (10년)
+        ticker = f"{s_code}.KS" if not s_code.startswith('0') else f"{s_code}.KQ"
+        hist = yf.Ticker(ticker).history(period="10y")
+        if hist.empty:
+            ticker = f"{s_code}.KQ" if ".KS" in ticker else f"{s_code}.KS"
+            hist = yf.Ticker(ticker).history(period="10y")
+
+        # (3) DART 데이터 (10년)
+        dart = get_dart(DART_KEY)
+        if not dart:
+            st.error("DART 서버 연결 실패. 잠시 후 Reboot 해주세요.")
+            st.stop()
             
-            # (1) 종목코드 찾기
-            if not s_code:
-                df_krx = get_krx_list()
-                if not df_krx.empty:
-                    s_term = company_name.replace(" ", "").upper()
-                    target = df_krx[df_krx['Name'].str.replace(" ", "").str.upper().str.contains(s_term)]
-                    if not target.empty:
-                        s_name, s_code = target.iloc[0]['Name'], target.iloc[0]['Code']
+        df_fs = fetch_10y_data(dart, s_code)
+        
+        if df_fs.empty:
+            st.warning("재무 데이터를 가져오지 못했습니다. 종목코드를 다시 확인해 주세요.")
+            st.stop()
 
-            if not s_code:
-                st.error(f"'{company_name}' 종목을 찾을 수 없습니다.")
-                st.stop()
+        # (4) 결과 대시보드
+        st.title(f"🏢 {display_name} ({s_code}) 10년 POR 리포트")
+        
+        curr_price = hist['Close'].iloc[-1]
+        shares = yf.Ticker(ticker).info.get('sharesOutstanding', 1)
+        now_por = (curr_price * shares) / (exp_profit * 100000000)
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("현재 주가", f"{curr_price:,.0f}원")
+        col2.metric("현재 POR (예상익 기준)", f"{now_por:.2f}배")
+        col3.metric("올해 예상 영업이익", f"{exp_profit:,.0f}억")
 
-            # (2) 주가 데이터 (yfinance)
-            stock = yf.Ticker(f"{s_code}.KS")
-            hist = stock.history(period="10y")
-            if hist.empty:
-                stock = yf.Ticker(f"{s_code}.KQ")
-                hist = stock.history(period="10y")
+        # (5) 10년 POR 히스토리 그래프
+        hist = hist.reset_index()
+        hist['Date'] = pd.to_datetime(hist['Date']).dt.tz_localize(None)
+        hist['MCap'] = hist['Close'] * shares
+        merged = pd.merge_asof(hist.sort_values('Date'), df_fs.sort_values('Date'), on='Date', direction='backward')
+        merged['POR'] = merged['MCap'] / (merged['OP'] * 100000000)
+        
+        avg_por = merged['POR'].mean()
 
-            if hist.empty:
-                st.error("주가 데이터를 가져오지 못했습니다.")
-                st.stop()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=merged['Date'], y=merged['POR'], name='과거 POR', line=dict(color='lightgray', width=1.5)))
+        fig.add_hline(y=avg_por, line_dash="dot", line_color="orange", annotation_text=f"10년 평균: {avg_por:.2f}")
+        fig.add_hline(y=now_por, line_color="red", line_width=2.5, annotation_text=f"현재 위치: {now_por:.2f}")
+        
+        if target_price:
+            t_por = (target_price * shares) / (exp_profit * 100000000)
+            fig.add_hline(y=t_por, line_color="blue", line_dash="dash", annotation_text=f"목표가 POR: {t_por:.2f}")
 
-            hist = hist.reset_index()
-            hist['Date'] = pd.to_datetime(hist['Date']).dt.tz_localize(None).astype('datetime64[ns]')
-            curr_price = hist['Close'].iloc[-1]
+        fig.update_layout(title="📈 10년 POR 밴드 차트", template="plotly_white", height=600)
+        st.plotly_chart(fig, use_container_width=True)
 
-            # (3) DART 연결
-            dart = get_dart_client(DART_KEY)
-            if dart is None:
-                st.error("❌ DART 서버 응답이 너무 늦습니다. 잠시 후 'Reboot' 버튼을 누르거나 다시 시도해 주세요.")
-                st.stop()
-            
-            df_fs = fetch_dart_data(dart, s_code)
-            
-            if df_fs.empty:
-                st.warning("과거 실적 데이터를 불러오지 못했습니다. (종목코드 확인 필요)")
-            else:
-                df_fs['Date'] = pd.to_datetime(df_fs['Date']).astype('datetime64[ns]')
-                st.title(f"🏢 {s_name} ({s_code}) 분석 결과")
-
-                shares = 1
-                try: shares = stock.info.get('sharesOutstanding', 1)
-                except: pass
-
-                mcap_billion = int((curr_price * shares) / 100000000)
-                now_por = (curr_price * shares) / (exp_profit * 100000000)
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("현재 주가", f"{curr_price:,.0f}원")
-                c2.metric("예상 POR", f"{now_por:.2f}배")
-                c3.metric("시가총액", f"{mcap_billion:,.0f}억")
-
-                # (4) POR 그래프
-                hist['MarketCap'] = hist['Close'] * shares
-                merged = pd.merge_asof(hist.sort_values('Date'), df_fs.sort_values('Date'), on='Date', direction='backward')
-                merged['POR'] = merged['MarketCap'] / (merged['영업이익_억원'] * 100000000)
-                avg_por = merged['POR'].mean()
-
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=merged['Date'], y=merged['POR'], name='과거 POR', line=dict(color='lightgray')))
-                fig.add_hline(y=avg_por, line_dash="dot", annotation_text=f"평균: {avg_por:.2f}")
-                fig.add_hline(y=now_por, line_color="red", line_width=2, annotation_text=f"현재: {now_por:.2f}")
-                
-                if target_price and target_price > 0:
-                    t_por = (target_price * shares) / (exp_profit * 100000000)
-                    fig.add_hline(y=t_por, line_color="blue", line_dash="dash", annotation_text=f"목표 POR: {t_por:.2f}")
-
-                fig.update_layout(title=f"📈 {s_name} 10년 POR 히스토리", template="plotly_white")
-                st.plotly_chart(fig, use_container_width=True)
-
-                st.subheader("📋 최근 10년 실적 (억원)")
-                st.table(df_fs.tail(10).set_index('Date').T)
+        st.subheader("📋 10년 실적 데이터 (단위: 억원)")
+        st.table(df_fs.set_index('Date').sort_index(ascending=False).T)
