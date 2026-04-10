@@ -1,5 +1,5 @@
 streamlit
-finance-datareader >= 0.9.60
+finance-datareader
 yfinance
 OpenDartReader
 plotly
